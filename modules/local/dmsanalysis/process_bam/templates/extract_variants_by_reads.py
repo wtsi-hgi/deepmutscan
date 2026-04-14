@@ -7,16 +7,21 @@ import gc
 import pysam
 import re
 import numpy as np
+import pyarrow as pa
 import polars as pl
 from Bio import SeqIO
 from Bio.Seq import Seq
 from datetime import datetime
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
 from collections import defaultdict
 
 #-- functions --#
-def get_base_cov(bam_path: str, chrom: str, start: int, end: int, qual: int) -> dict:
+def init_bam(bam_path):
+    global bam_file_cov
+    bam_file_cov = pysam.AlignmentFile(bam_path, "rb")
+
+def get_base_cov(chrom: str, start: int, end: int, qual: int) -> dict:
     """
     Compute per-base coverage for a region and return a dict {1-based position: coverage}
     Parameters:
@@ -28,9 +33,7 @@ def get_base_cov(bam_path: str, chrom: str, start: int, end: int, qual: int) -> 
     Returns:
         -- dict: {1-based position: coverage} dict for ORF region
     """
-    bam = pysam.AlignmentFile(bam_path, "rb")
-    A, C, G, T = bam.count_coverage(chrom, start, end, quality_threshold = qual)
-    bam.close()
+    A, C, G, T = bam_file_cov.count_coverage(chrom, start, end, quality_threshold = qual)
 
     # total coverage per base
     coverage_array = np.array(A, dtype=np.uint32) + \
@@ -71,9 +74,13 @@ def get_base_cov_in_chunk(bam_path: str, chrom: str, start: int, end: int, qual:
     chunks = list(chunk_ranges(start, end, sub_region_size))
     dicts = []
 
-    with ProcessPoolExecutor(max_workers = threads) as executor:
-        futures = [executor.submit(get_base_cov, bam_path, chrom, start, end, qual) for start, end in chunks]
-        for f in futures:
+    with ProcessPoolExecutor(max_workers = threads, initializer = init_bam, initargs = (bam_path,)) as executor:
+        futures = [ 
+            executor.submit(get_base_cov, chrom, s, e, qual)
+            for s, e in chunks
+        ]
+
+        for f in as_completed(futures):
             dicts.append(f.result())
 
     merged_dict = {}
@@ -134,8 +141,9 @@ def parse_md(read: dict) -> list:
             num_matches = int(match.group(1))
             base_ref_pos += num_matches
         elif match.group(2):
-            variants.append(('X', base_ref_pos, match.group(2)))
-            base_ref_pos += 1
+            for base in match.group(2):
+                variants.append(('X', base_ref_pos, base))
+                base_ref_pos += 1
         elif match.group(3):
             deleted_bases = match.group(3)[1:]
             for base in deleted_bases:
@@ -314,7 +322,8 @@ def parse_read(read: dict, orf_start: int, orf_end: int, base_qual: int) -> list
     for var in variants:
         if var['ref_pos'] >= orf_start and var['ref_pos'] <= orf_end:
             if var['alt_qual'] >= base_qual:
-                ref_codon = codon_dict[var['ref_name']][var['codon_idx']]
+                codons_tmp = codon_dict[var['ref_name']]
+                ref_codon = codons_tmp[var['codon_idx']]
                 variants_filtered.append({ 'var_type':  var['var_type'],
                                            'ref_name':  var['ref_name'],
                                            'ref_pos':   var['ref_pos'],
@@ -338,11 +347,34 @@ def batch_parse_reads(batch_reads: list, orf_start: int, orf_end: int, base_qual
     Returns:
         -- list: list of variant dicts for the batch
     """
-    results = []
+    cols = {
+        "base_cov_avg": [],
+        "varying_bases": [],
+        "base_mut": [],
+        "varying_codons": [],
+        "codon_mut": [],
+        "aa_mut": [],
+        "pos_mut": []
+    }
+
     for read in batch_reads:
         result = parse_read(read, orf_start, orf_end, base_qual)
-        results.append(result)
-    return results
+    
+        if result[2] == "":
+            continue
+
+        cols["base_cov_avg"].append(result[0])
+        cols["varying_bases"].append(result[1])
+        cols["base_mut"].append(result[2])
+        cols["varying_codons"].append(result[3])
+        cols["codon_mut"].append(result[4])
+        cols["aa_mut"].append(result[5])
+        cols["pos_mut"].append(result[6])            
+
+    if not cols["base_mut"]:
+        return None
+
+    return pa.table(cols)
 
 def function_for_processpool(args):
     """
@@ -395,27 +427,16 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
                 ]
 
                 results = []
-                for f in futures:
+                for f in as_completed(futures):
                     batch_result = f.result()
                     if batch_result:
-                        df_batch = pl.DataFrame(batch_result, schema={
-                            "base_cov_avg": pl.Int64,
-                            "varying_bases": pl.Utf8,
-                            "base_mut": pl.Utf8,
-                            "varying_codons": pl.Utf8,
-                            "codon_mut": pl.Utf8,
-                            "aa_mut": pl.Utf8,
-                            "pos_mut": pl.Utf8
-                        }, orient = "row")
-                        results.append(df_batch)
-                    # -- free memory -- #
-                    del batch_result
-                    gc.collect()
+                        results.append(batch_result)
 
                 if results:
-                    df_yield = pl.concat(results, how = "vertical", rechunk = True)
+                    df_yield = pl.from_arrow(pa.concat_tables(results))
                     df_yield = df_yield.filter(pl.col("base_mut") != "")
-                    df_yield = df_yield.with_columns(pl.len().over("base_mut").alias("counts"))
+                    df_yield = df_yield.with_columns(pl.lit(1).alias("counts"))
+                    # df_yield = df_yield.with_columns(pl.len().over("base_mut").alias("counts"))
                 else:
                     df_yield = pl.DataFrame([], schema={
                         "base_cov_avg": pl.Int64,
@@ -449,27 +470,16 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
             ]
 
             results = []
-            for f in futures:
+            for f in as_completed(futures):
                 batch_result = f.result()
                 if batch_result:
-                    df_batch = pl.DataFrame(batch_result, schema={
-                        "base_cov_avg": pl.Int64,
-                        "varying_bases": pl.Utf8,
-                        "base_mut": pl.Utf8,
-                        "varying_codons": pl.Utf8,
-                        "codon_mut": pl.Utf8,
-                        "aa_mut": pl.Utf8,
-                        "pos_mut": pl.Utf8
-                    }, orient = "row")
-                    results.append(df_batch)
-                # -- free memory -- #
-                del batch_result
-                gc.collect()
+                    results.append(batch_result)
 
             if results:
-                df_yield = pl.concat(results, how = "vertical", rechunk = True)
+                df_yield = pl.from_arrow(pa.concat_tables(results))
                 df_yield = df_yield.filter(pl.col("base_mut") != "")
-                df_yield = df_yield.with_columns(pl.len().over("base_mut").alias("counts"))
+                df_yield = df_yield.with_columns(pl.lit(1).alias("counts"))
+                # df_yield = df_yield.with_columns(pl.len().over("base_mut").alias("counts"))
             else:
                 df_yield = pl.DataFrame([], schema={
                     "base_cov_avg": pl.Int64,
