@@ -144,7 +144,7 @@ def parse_md(read: dict) -> list:
 
     return variants
 
-def gatk_formating(variants: list) -> list:
+def gatk_formating(variants: list) -> tuple:
     """
     Format variants into GATK-like format for easier downstream processing.
     Parameters:
@@ -152,6 +152,9 @@ def gatk_formating(variants: list) -> list:
     Returns:
         -- list: list of formatted variant dicts
     """
+    if not variants:
+        return 0, 0, "", 0, "", "", ""
+
     varying_bases = 0
     varying_codons = 0
     base_mut = ""
@@ -388,7 +391,7 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
 
                 futures = [ 
                     executor.submit(function_for_processpool, (batch, orf_start, orf_end, base_qual)) 
-                    for batch in read_batches 
+                    for batch in read_batches
                 ]
 
                 results = []
@@ -411,6 +414,7 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
 
                 if results:
                     df_yield = pl.concat(results, how = "vertical", rechunk = True)
+                    df_yield = df_yield.filter(pl.col("base_mut") != "")
                     df_yield = df_yield.with_columns(pl.len().over("base_mut").alias("counts"))
                 else:
                     df_yield = pl.DataFrame([], schema={
@@ -464,6 +468,7 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
 
             if results:
                 df_yield = pl.concat(results, how = "vertical", rechunk = True)
+                df_yield = df_yield.filter(pl.col("base_mut") != "")
                 df_yield = df_yield.with_columns(pl.len().over("base_mut").alias("counts"))
             else:
                 df_yield = pl.DataFrame([], schema={
@@ -551,6 +556,7 @@ if __name__ == "__main__":
     list_results_filtered = [df for df in list_results if df.height > 0]
     if list_results_filtered:
         df_variants = pl.concat(list_results_filtered, how = "vertical")
+        df_variants = df_variants.filter(pl.col("base_mut") != "")
         df_variants_counts = ( df_variants.group_by("base_mut")
                                           .agg([pl.col("counts").sum().alias("counts"),
                                                 pl.all().exclude(["base_mut", "counts"]).first()]) )
