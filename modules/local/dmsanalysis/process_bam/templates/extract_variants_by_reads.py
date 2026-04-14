@@ -104,13 +104,13 @@ def extract_read_info(read: pysam.AlignedSegment) -> dict:
     Returns:
         -- dict: a read dict
     """
-    if read.is_reverse:
-        read_seq = str(Seq(read.query_sequence).reverse_complement())
-        read_qual = read.query_qualities[::-1]
-    else:
-        read_seq = read.query_sequence
-        read_qual = read.query_qualities
-    
+    # important
+    # 1. R2 is reverse complemented
+    # 2. CIGAR and MD tag are based on the reference
+    # 3. No need to do reverse complement for parsing variants
+    read_seq = read.query_sequence
+    read_qual = read.query_qualities
+
     return {
         'ref':   read.reference_name,
         'pos':   read.reference_start,
@@ -333,7 +333,7 @@ def parse_read(read: dict, orf_start: int, orf_end: int, base_qual: int) -> list
                                            'alt_idx' :  var['alt_idx'],
                                            'codon_idx': var['codon_idx'],
                                            'ref_codon': ref_codon })
-    
+
     return gatk_formating(variants_filtered)
 
 def batch_parse_reads(batch_reads: list, orf_start: int, orf_end: int, base_qual: int):
