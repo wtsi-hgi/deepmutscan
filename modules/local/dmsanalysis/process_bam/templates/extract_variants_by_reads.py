@@ -403,7 +403,7 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
                             "codon_mut": pl.Utf8,
                             "aa_mut": pl.Utf8,
                             "pos_mut": pl.Utf8
-                        })
+                        }, orient = "row")
                         results.append(df_batch)
                     # -- free memory -- #
                     del batch_result
@@ -411,7 +411,7 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
 
                 if results:
                     df_yield = pl.concat(results, how = "vertical", rechunk = True)
-                    df_yield = df_yield.group_by(["base_mut"]).agg(pl.len().alias("counts"))
+                    df_yield = df_yield.with_columns(pl.len().over("base_mut").alias("counts"))
                 else:
                     df_yield = pl.DataFrame([], schema={
                         "base_cov_avg": pl.Int64,
@@ -422,10 +422,12 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
                         "aa_mut": pl.Utf8,
                         "pos_mut": pl.Utf8,
                         "counts": pl.Int64
-                    })
+                    }, orient = "row")
+
+                read_chunk = []
 
                 # -- free memory -- #
-                del read_chunk, read_batches, futures, results
+                del read_batches, futures, results
                 gc.collect()
 
                 yield df_yield
@@ -454,7 +456,7 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
                         "codon_mut": pl.Utf8,
                         "aa_mut": pl.Utf8,
                         "pos_mut": pl.Utf8
-                    })
+                    }, orient = "row")
                     results.append(df_batch)
                 # -- free memory -- #
                 del batch_result
@@ -462,7 +464,7 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
 
             if results:
                 df_yield = pl.concat(results, how = "vertical", rechunk = True)
-                df_yield = df_yield.group_by(["base_mut"]).agg(pl.len().alias("counts"))
+                df_yield = df_yield.with_columns(pl.len().over("base_mut").alias("counts"))
             else:
                 df_yield = pl.DataFrame([], schema={
                     "base_cov_avg": pl.Int64,
@@ -473,7 +475,7 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
                     "aa_mut": pl.Utf8,
                     "pos_mut": pl.Utf8,
                     "counts": pl.Int64
-                })
+                }, orient = "row")
             
             # -- free memory -- #
             del read_chunk, read_batches, futures, results
@@ -541,15 +543,17 @@ if __name__ == "__main__":
     print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Extracting read information, please wait...", flush = True)
     list_results = []
     for i, chunk_result in enumerate(read_bam_in_chunk(args.input_bam, args.orf_range, args.base_qual, args.chunk_size, args.threads)):
-        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |--> Processed chunk {i+1} with {len(chunk_result)} read pairs", flush = True)
-        list_results.extend(chunk_result)
+        print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |--> Processed chunk {i+1} with {args.chunk_size} read pairs", flush = True)
+        list_results.append(chunk_result)
     print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |--> Finished.", flush = True)
 
     print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Creating the variant matrix, please wait...", flush = True)
     list_results_filtered = [df for df in list_results if df.height > 0]
     if list_results_filtered:
         df_variants = pl.concat(list_results_filtered, how = "vertical")
-        df_variants_counts = df_variants.group_by(["base_mut"]).agg(pl.sum("counts").alias("counts"))
+        df_variants_counts = ( df_variants.group_by("base_mut")
+                                          .agg([pl.col("counts").sum().alias("counts"),
+                                                pl.all().exclude(["base_mut", "counts"]).first()]) )
     
     # -- free memory -- #
     del list_results, list_results_filtered, df_variants
@@ -565,5 +569,5 @@ if __name__ == "__main__":
                                                     pl.col("codon_mut"),
                                                     pl.col("aa_mut"),
                                                     pl.col("pos_mut")])
-    df_variants_counts.write_csv(output_file, sep = "\t")
+    df_variants_counts.write_csv(output_file, separator = "\t", null_value = "NA")
     print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Done.", flush = True)
