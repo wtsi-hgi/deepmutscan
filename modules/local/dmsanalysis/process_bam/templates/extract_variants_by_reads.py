@@ -23,7 +23,7 @@ def init_bam(bam_path):
 
 def get_base_cov(chrom: str, start: int, end: int, qual: int) -> dict:
     """
-    Compute per-base coverage for a region and return a dict {1-based position: coverage}
+    Compute per-base coverage for a region and return a dict {0-based position: coverage}
     Parameters:
         -- bam_path: path to the BAM file
         -- chrom: chromosome name
@@ -31,7 +31,7 @@ def get_base_cov(chrom: str, start: int, end: int, qual: int) -> dict:
         -- end: end position (0-based)
         -- qual: quality threshold
     Returns:
-        -- dict: {1-based position: coverage} dict for ORF region
+        -- dict: {0-based position: coverage} dict for ORF region
     """
     A, C, G, T = bam_file_cov.count_coverage(chrom, start, end, quality_threshold = qual)
 
@@ -69,7 +69,7 @@ def get_base_cov_in_chunk(bam_path: str, chrom: str, start: int, end: int, qual:
         -- sub_region_size: size of each chunk to process in parallel
         -- threads: number of threads for parallel processing
     Returns:
-        -- dict: a dict {1-based position: coverage}
+        -- dict: a dict {0-based position: coverage}
     """
     chunks = list(chunk_ranges(start, end, sub_region_size))
     dicts = []
@@ -180,7 +180,8 @@ def gatk_formating(variants: list) -> tuple:
     varying_bases = len(base_variants)
 
     base_mut = ", ".join(
-        f"{v['ref_pos']}:{v['ref_base']}>{v['alt_base']}"
+        # change 0-based position to 1-based position for better readability
+        f"{v['ref_pos'] + 1}:{v['ref_base']}>{v['alt_base']}"
         for v in base_variants
     )
 
