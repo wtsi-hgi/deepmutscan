@@ -41,7 +41,7 @@ def get_base_cov(chrom: str, start: int, end: int, qual: int) -> dict:
                      np.array(G, dtype=np.uint32) + \
                      np.array(T, dtype=np.uint32)
 
-    dict_base_cov = {pos + 1 + start: cov for pos, cov in enumerate(coverage_array)}
+    dict_base_cov = {pos + start: cov for pos, cov in enumerate(coverage_array)}
     return dict_base_cov
 
 def chunk_ranges(start: int, end: int, sub_region_size: int) -> tuple:
@@ -436,7 +436,6 @@ def read_bam_in_chunk(bam_path: str, orf_range: str, base_qual: int, chunk_size:
                     df_yield = pl.from_arrow(pa.concat_tables(results))
                     df_yield = df_yield.filter(pl.col("base_mut") != "")
                     df_yield = df_yield.with_columns(pl.lit(1).alias("counts"))
-                    # df_yield = df_yield.with_columns(pl.len().over("base_mut").alias("counts"))
                 else:
                     df_yield = pl.DataFrame([], schema={
                         "base_cov_avg": pl.Int64,
@@ -505,7 +504,7 @@ if __name__ == "__main__":
     parser.add_argument("-r", "--reference",  type = str, required = True, help = "Reference FASTA file")
     parser.add_argument("-o", "--orf_range",  type = str, required = True, help = "ORF range in the reference 0-based (e.g., '352-1383')")
     parser.add_argument("-p", "--prefix",     type = str, default = '',    help = "Output prefix")
-    parser.add_argument("-b", "--base_qual",  type = int, default = 20,    help = "Minimum base quality")
+    parser.add_argument("-q", "--base_qual",  type = int, default = 20,    help = "Minimum base quality")
     parser.add_argument("-c", "--chunk_size", type = int, default = 1000,  help = "Chunk size for processing reads")
     parser.add_argument("-t", "--threads",    type = int, default = 4,     help = "Number of threads")
     
