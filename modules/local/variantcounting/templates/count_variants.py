@@ -22,10 +22,16 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict, deque
 
 #-- functions --#
-def init_bam(bam_path):
+#def init_bam(bam_path):
+#    global bam_file_cov
+#    bam_file_cov = pysam.AlignmentFile(bam_path, "rb")
+def init_bam(cram_path, reference_path):
     global bam_file_cov
-    bam_file_cov = pysam.AlignmentFile(bam_path, "rb")
-
+    bam_file_cov = pysam.AlignmentFile(
+        cram_path,
+        "rc",
+        reference_filename=reference_path
+    )
 def get_base_cov(chrom, start, end, qual, min_flank):
     if min_flank and min_flank > 0:
         cov = defaultdict(int)
@@ -63,11 +69,23 @@ def chunk_ranges(start, end, sub_region_size):
     for s in range(start, end, sub_region_size):
         yield s, min(s + sub_region_size, end)
 
-def get_base_cov_in_chunk(bam_path, chrom, start, end, qual, sub_region_size, threads, min_flank):
+#def get_base_cov_in_chunk(bam_path, chrom, start, end, qual, sub_region_size, threads, min_flank):
+#    chunks = list(chunk_ranges(start, end, sub_region_size))
+#    dicts = []
+#
+#    with ProcessPoolExecutor(max_workers = threads, initializer = init_bam, initargs = (bam_path,)) as executor:
+def get_base_cov_in_chunk(
+    cram_path, reference_path, chrom, start, end,
+    qual, sub_region_size, threads, min_flank
+):
     chunks = list(chunk_ranges(start, end, sub_region_size))
     dicts = []
 
-    with ProcessPoolExecutor(max_workers = threads, initializer = init_bam, initargs = (bam_path,)) as executor:
+    with ProcessPoolExecutor(
+        max_workers=threads,
+        initializer=init_bam,
+        initargs=(cram_path, reference_path)
+    ) as executor:
         futures = [
             executor.submit(get_base_cov, chrom, s, e, qual, min_flank)
             for s, e in chunks
@@ -77,6 +95,10 @@ def get_base_cov_in_chunk(bam_path, chrom, start, end, qual, sub_region_size, th
             dicts.append(f.result())
 
     merged_dict = {}
+    for d in dicts:
+        merged_dict.update(d)
+
+    return merged_dict
     for d in dicts:
         merged_dict.update(d)
 
@@ -344,13 +366,14 @@ def fold_counts(acc, new):
                .agg([pl.col("counts").sum().alias("counts"),
                      pl.all().exclude(["base_mut", "counts"]).first()]) )
 
-def read_bam_in_chunk(bam_path, orf_start, orf_end, base_qual, min_flank, batch_size, threads, base_cov, codons):
+#def read_bam_in_chunk(bam_path, orf_start, orf_end, base_qual, min_flank, batch_size, threads, base_cov, codons):
+def read_bam_in_chunk(cram_path, reference_path, orf_start, orf_end, base_qual, min_flank, batch_size, threads, base_cov, codons):
     # Keep roughly two batches per worker in flight. The previous version submitted one batch,
     # waited for it, then read the next, so only a single worker was ever busy no matter how many
     # cpus the task was given.
     max_inflight = max(2, threads * 2)
 
-    with pysam.AlignmentFile(bam_path, "rb", threads = threads) as bam_file, \\
+    with pysam.AlignmentFile(cram_path, "rc", reference_filename=reference_path, threads = threads) as bam_file, \\
         ProcessPoolExecutor(max_workers = threads,
                             initializer = init_worker,
                             initargs = (base_cov, codons)) as executor:
@@ -416,8 +439,8 @@ def write_column_sheet(path):
 
 #-- Nextflow-interpolated arguments --#
 class args:
-    input_bam  = "$bam"
-    reference  = "$fasta"
+    input_cram  = "${cram}"
+    reference  = "${fasta}"
     orf_range  = "$reading_frame"          # 1-based inclusive (GATK --orf convention)
     base_qual  = int("$base_qual")
     min_flank  = int("$min_flank")
@@ -469,7 +492,7 @@ if __name__ == "__main__":
 
     print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Get the base coverage, please wait...", flush = True)
     sub_region_size = max(1, (orf_end - orf_start + 1) // args.threads)
-    dict_base_cov = get_base_cov_in_chunk(args.input_bam, ref_name, orf_start, orf_end + 1, args.base_qual, sub_region_size, args.threads, args.min_flank)
+    dict_base_cov = get_base_cov_in_chunk(args.input_cram, args.reference, ref_name, orf_start, orf_end + 1, args.base_qual, sub_region_size, args.threads, args.min_flank)
 
     # Nothing aligned inside the reading frame at all. Left alone this writes an empty table and
     # exits 0, and the run only dies much later in process_variant_counts.R with "no lines
@@ -485,7 +508,7 @@ if __name__ == "__main__":
 
     print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Extracting read information, please wait...", flush = True)
     df_variants_counts = None
-    for i, batch_counts in enumerate(read_bam_in_chunk(args.input_bam, orf_start, orf_end, args.base_qual, args.min_flank, args.batch_size, args.threads, dict_base_cov, codon_dict)):
+    for i, batch_counts in enumerate(read_bam_in_chunk(args.input_cram, args.reference, orf_start, orf_end, args.base_qual, args.min_flank, args.batch_size, args.threads, dict_base_cov, codon_dict)):
         df_variants_counts = fold_counts(df_variants_counts, batch_counts)
         if (i + 1) % 100 == 0:
             print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |--> Processed batch {i+1}", flush = True)

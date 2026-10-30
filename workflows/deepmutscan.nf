@@ -134,7 +134,7 @@ workflow DEEPMUTSCAN {
     )
 
     // Sorted BAM with its index -> tuple(val(meta), path(bam), path(bai))
-    def ch_sorted_indexed = MERGE_ALIGN.out.bam
+    def ch_sorted_indexed = MERGE_ALIGN.out.cram
 
     // Broadcast singletons to N (one per sample), anchored on the sorted+indexed channel
     def ch_fasta_for_counts = ch_fasta.combine(ch_sorted_indexed).map { it[1] }          // path -- N
@@ -515,7 +515,7 @@ workflow DEEPMUTSCAN {
     multiqc_report = MULTIQC.out.report.map { _meta, report -> [report] }.toList() // channel: /path/to/multiqc_report.html
     versions       = ch_versions                 // channel: [ path(versions.yml) ]
     bwa_index      = BWA_INDEX.out.index
-    merged_bam     = MERGE_ALIGN.out.bam
+    merged_bam     = MERGE_ALIGN.out.cram
 }
 
 /*

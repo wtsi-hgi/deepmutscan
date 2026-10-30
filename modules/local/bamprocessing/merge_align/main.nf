@@ -13,7 +13,7 @@ process MERGE_ALIGN {
     tuple val(meta2), path(index)
 
     output:
-    tuple val(meta), path("*.sorted.bam"), path("*.sorted.bam.bai"), emit: bam
+    tuple val(meta), path("*.sorted.cram"), path("*.sorted.cram.crai"), emit: cram
     tuple val(meta), path("*.vsearch_mergepairs.log"), emit: log
     tuple val("${task.process}"), val('bwa'), eval('bwa 2>&1 | sed -n "s/^Version: //p"'), topic: versions, emit: versions_bwa
     tuple val("${task.process}"), val('samtools'), eval("samtools version | sed '1!d;s/.* //'"), topic: versions, emit: versions_samtools
@@ -26,9 +26,9 @@ process MERGE_ALIGN {
     def args = task.ext.args ?: ''
     def args2 = task.ext.args2 ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
+    def index_prefix = "${index}/${file(params.fasta).baseName}"
     """
-    INDEX=`find -L ./ -name "*.amb" | sed 's/\\.amb\$//'`
-
+    set -o pipefail
     # Merge the overlapping mates of each raw read pair into one consensus read, so the overlap is
     # counted once and its bases carry a recalculated quality. Merging comes first, before any
     # alignment: the reads are aligned once (as merged reads), and the filter below acts on exactly
@@ -41,7 +41,7 @@ process MERGE_ALIGN {
     # chimeric merged reads get counted twice, low-MAPQ hits get counted at all, and a merged read
     # carrying a deletion is reported as whatever substitution it also happens to carry
     # (gatk_formating keeps only X events). Wildtype reads are kept: the error correction needs them.
-    # The filtered alignments are coordinate-sorted and indexed in the same pipe: an unsorted BAM is
+    # The filtered alignments are coordinate-sorted and indexed in the same pipe: an unsorted CRAM is
     # about 3.5 times larger, and writing it out for a separate sort and index task only costs time.
     vsearch --fastq_mergepairs ${reads[0]} \\
         --reverse ${reads[1]} \\
@@ -49,10 +49,10 @@ process MERGE_ALIGN {
         --threads $task.cpus \\
         $args \\
         2> ${prefix}.vsearch_mergepairs.log \\
-        | bwa mem -t $task.cpus \$INDEX - \\
+        | bwa mem -t $task.cpus ${index_prefix} - \\
         | samtools view -h $args2 - \\
         | awk '/^@/ || \$6 !~ /[IDN]/' \\
-        | samtools sort --threads $task.cpus -o ${prefix}.sorted.bam##idx##${prefix}.sorted.bam.bai --write-index -
+        | samtools sort --reference ${params.fasta} --output-fmt CRAM --output-fmt-option store_md=1 --threads $task.cpus -o ${prefix}.sorted.cram##idx##${prefix}.sorted.cram.crai --write-index -
 
     # vsearch's first log line reports the host's RAM and core count, so the file differs
     # between machines and the nf-test snapshot can never match across them. Drop that line and
@@ -67,8 +67,8 @@ process MERGE_ALIGN {
     stub:
     def prefix = task.ext.prefix ?: "${meta.id}"
     """
-    touch ${prefix}.sorted.bam
-    touch ${prefix}.sorted.bam.bai
+    touch ${prefix}.sorted.cram
+    touch ${prefix}.sorted.cram.crai
     touch ${prefix}.vsearch_mergepairs.log
     """
 }

@@ -9,7 +9,7 @@ process VARIANTCOUNTING {
         : 'community.wave.seqera.io/library/pysam_biopython_numpy_polars-lts-cpu_pruned:ac0353fd8d903112' }"
 
     input:
-    tuple val(meta), path(bam), path(bai)
+    tuple val(meta), path(cram), path(crai)
     path fasta
     val reading_frame
     val base_qual
